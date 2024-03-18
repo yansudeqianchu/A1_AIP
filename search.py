@@ -17,9 +17,12 @@ In search.py, you will implement generic search algorithms which are called by
 Pacman agents (in searchAgents.py).
 """
 
+import itertools
+from itertools import product
 import util
 from game import Actions
 from game import Directions
+from game import Grid
 from util import foodGridtoDic
 
 
@@ -81,7 +84,6 @@ def depthFirstSearch(problem):
     print("Start's successors:", problem.getSuccessors(problem.getStartState()))
     """
     "*** YOUR CODE HERE ***"
-    print("testing")
 
     util.raiseNotDefined()
 
@@ -128,9 +130,35 @@ def foodHeuristic(state, problem):
     problem.heuristicInfo['wallCount']
     """
     "*** YOUR CODE HERE for task1 ***"
+    position, foodGrid = state
+    distance = []
+    distances_food =[0]
+    for food in foodGrid.asList(): #人和食物的距离
+        distance.append(getMazeDistance(position,food, problem))
+        for tofood in foodGrid.asList(): #每个食物之间的距离
+            distances_food.append(getMazeDistance(food,tofood, problem))
+    return min(distance) + max(distances_food) if len(distance) else max(distances_food)
 
     # comment the below line after you implement the algorithm
     util.raiseNotDefined()
+
+
+def createFoodGrid(pos, width, height):
+    foodGrid = Grid(width, height, initialValue=False) #greate new grid
+    x, y = pos #tuple (x, y)
+    foodGrid[x][y]= True
+
+    return foodGrid
+
+def getMazeDistance(start, end, problem): 
+    try:
+        return problem.heuristicInfo[(start, end)] #test is the current distance between start and enc have been calculated, if so just return
+    except:
+        foodGrid = createFoodGrid(end, problem.walls.width, problem.walls.height)
+        prob = SingleFoodSearchProblem(pos=start, food=foodGrid, walls=problem.walls) #create a new probl after new create
+        problem.heuristicInfo[(start,end)]=len(astar(prob)) #it is a dict
+
+        return problem.heuristicInfo[(start,end)] #return solution path
 
 
 class MAPFProblem(SearchProblem):
@@ -157,6 +185,15 @@ class MAPFProblem(SearchProblem):
     def isGoalState(self, state):
         "Return if the state is the goal state"
         "*** YOUR CODE HERE for task2 ***"
+        pacmanPositions, foodGrid = state
+        count = 0
+        for name in list(pacmanPositions.keys()):
+            count += foodGrid.count(item=name)
+        if count == 0:
+            return True 
+        return False
+        #return all(foodGrid[x][y] == False for x in range(foodGrid.width) for y in range(foodGrid.height))
+
 
         # comment the below line after you implement the function
         util.raiseNotDefined()
@@ -176,9 +213,55 @@ class MAPFProblem(SearchProblem):
 
         """
         "*** YOUR CODE HERE for task2 ***"
+        pacmanPositions, foodGrid = state
+        successors = []
+        #self._expanded += 1  # DO NOT CHANGE
+
+        # Generate all possible moves for each pacman
+        all_moves = {}
+        for pacman_name, (x, y) in pacmanPositions.items():
+            moves = []
+            for direction in [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST, Directions.STOP]:
+                dx, dy = Actions.directionToVector(direction)
+                next_x, next_y = int(x + dx), int(y + dy)
+                if not self.walls[next_x][next_y]:
+                    moves.append(direction)
+            all_moves[pacman_name] = moves
+
+        # Generate all combinations of moves for all pacmans
+        for move_combination in itertools.product(*all_moves.values()):
+            nextPositions = pacmanPositions.copy()
+            nextFoodGrid = foodGrid.copy()
+            move_dict = {}
+            idx = 0
+            for pacman_name in pacmanPositions.keys():
+                direction = move_combination[idx]
+                x, y = nextPositions[pacman_name]
+                dx, dy = Actions.directionToVector(direction)
+                next_x, next_y = int(x + dx), int(y + dy)
+                nextPositions[pacman_name] = (next_x, next_y)
+                if nextFoodGrid[next_x][next_y] == pacman_name:
+                    nextFoodGrid[next_x][next_y] = False  # Consume the target food
+                move_dict[pacman_name] = direction
+                idx += 1
+
+            successors.append(((nextPositions, nextFoodGrid), move_dict, 1))
+
+        return successors
 
         # comment the below line after you implement the function
         util.raiseNotDefined()
+
+
+class CBSNode:
+    def __init__(self, constraints, path, solution, cost):  # Use double underscores for __init__
+        self.constraints = constraints
+        self.path = path
+        self.solution = solution
+        self.cost = cost
+
+    def __lt__(self, other):
+        return self.cost < other.cost
 
 
 def conflictBasedSearch(problem: MAPFProblem):
@@ -189,9 +272,100 @@ def conflictBasedSearch(problem: MAPFProblem):
 
     """
     "*** YOUR CODE HERE for task3 ***"
+    root = CBSNode(constraints={}, path={}, solution={}, cost=0)
+    for agent in problem.start[0].keys():  # Iterate over the keys of the dictionary
+        
+        path, solution = aStarAdaptSearch(problem, agent, root.constraints, problem.getStartState())
+        root.path[agent] = path
+        root.solution[agent] = solution
+    root.cost = sum([len(path) for path in root.solution.values()])
 
-    # comment the below line after you implement the function
+    OPEN = util.PriorityQueue()
+    OPEN.push(root, root.cost)
+
+    while not OPEN.isEmpty():
+        node = OPEN.pop()
+        conflict = findConflict(node.path)
+        if not conflict:
+            return node.solution
+        
+        for agent in conflict['agents']:
+            new_constraints = node.constraints.copy()
+            new_constraints[(agent, conflict['x'], conflict['y'], conflict['t'])] = True
+            new_node = CBSNode(constraints=new_constraints, path=node.path.copy(), solution=node.solution.copy(), cost=0)
+            path, solution = aStarAdaptSearch(problem, agent, new_constraints, problem.getStartState())
+            new_node.path[agent] = path
+            new_node.solution[agent] = solution
+            new_node.cost = sum([len(path) for path in new_node.solution.values()])
+            OPEN.push(new_node, new_node.cost)
+
+    return None
+
     util.raiseNotDefined()
+
+def findConflict(paths):
+    conflict ={}
+    foundConflict = False
+    max_length = max(len(path)for path in paths.values())
+    for index in range(max_length):
+        if foundConflict:
+            return conflict
+        positions_at_index = {agent: paths[agent][index] for agent in paths if index < len(paths[agent])}
+        seen_positions ={}
+        for agent,position in positions_at_index.items():
+            if position in seen_positions:
+                foundConflict = True
+                conflict['x']= position[0]
+                conflict['y']= position[1]
+                conflict['t']= index
+                seen_positions[position] += agent
+                conflict['agents']= seen_positions[position]# 只记录参与了 conflict 的 agent
+            else:
+                seen_positions[position] = agent
+    return conflict
+
+def manhattanHeuristic(position, goal):
+    xy1 = position
+    xy2 = goal
+    return abs(xy1[0] - xy2[0]) + abs(xy1[1] - xy2[1])
+
+def getGoalState(problem, agent): 
+    for x in range(problem.getFoodGrid().width):
+        for y in range(problem.getFoodGrid().height):
+            if problem.getFoodGrid():
+                return [x][y] == agent # Assuming the foodGrid is marked with agent namesreturn(x，y)
+    return None
+
+def aStarAdaptSearch(problem, agent, constraints, state):
+    myPQ = util.PriorityQueue()
+    agentPositions, foodGrid = state
+    startState = problem.getStartState()[0][agent]
+    goalState =getGoalState(problem, agent)
+    startNode =(startState,0,[startState],[],0)#(state, cost, path, actions, time)
+    myPQ.push(startNode,0)# Priority is heuristic cost from start to goal
+    visited = set()
+    while not myPQ.isEmpty():
+        currentNode = myPQ.pop()
+        currentState, currentCost, currentPath, currentSolution, currentTime = currentNode
+        if currentState == goalState:
+            return(currentPath, currentSolution)
+        if(currentState,currentTime)in visited:
+            continue
+        visited.add((currentState, currentTime))
+        for nextState, action, stepCost in problem.getSuccessors(currentState, agent):
+            if((agent, nextState[0],nextState[1],currentTime+1) not in constraints.keys()):# Skip the successor violates constraints
+                newCost =currentCost + stepCost
+                newPath = currentPath + [nextState]
+                newSolution = currentSolution +[action]
+                newTime = currentTime +1
+                heuristicCost = manhattanHeuristic(nextState, goalState)# abs(xy1[0]- xy2[0])+
+                totalCost = newCost + heuristicCost
+                newNode =(nextState,newCost,newPath,newSolution,newTime)
+                myPQ.push(newNode, totalCost)
+# If no path found
+    return []
+
+
 
 
 "###WARNING: Altering the following functions is STRICTLY PROHIBITED. Failure to comply may result in a grade of 0 for Assignment 1.###"
